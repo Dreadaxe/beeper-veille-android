@@ -41,7 +41,7 @@ object DigestBuilder {
                         .sortedByDescending { it.value }.take(5)
                         .joinToString(", ") { "${it.key} (${it.value})" }
                     val hits = if (words.isEmpty()) 0 else rm.count { m -> words.any { m.text.contains(it, true) } }
-                    appendLine("#$title — ${rm.size} message(s)${if (words.isNotEmpty()) ", $hits occurrence(s)" else ""}")
+                    appendLine("$title — ${rm.size} message(s)${if (words.isNotEmpty()) ", $hits occurrence(s)" else ""}")
                     appendLine("Participants : $participants")
                     rm.filter { it.text.isNotBlank() }
                         .sortedWith(compareByDescending<BeeperMessage> { m -> words.count { m.text.contains(it, true) } }.thenByDescending { it.text.length })
@@ -71,7 +71,7 @@ object DigestBuilder {
             val room = rooms[m.roomId]?.title ?: m.roomId
             if (room != currentRoom) {
                 currentRoom = room
-                appendLine("\n--- #$room ---")
+                appendLine("\n--- $room ---")
             }
             val marker = if (words.any { m.text.contains(it, true) }) " [MOT-CLÉ]" else ""
             appendLine("[${timeFmt.format(Date(m.timestamp))}] ${m.displayName}$marker")
