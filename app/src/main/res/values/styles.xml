@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.BeeperVeille" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="colorPrimary">#6C5CE7</item>
+        <item name="colorPrimaryVariant">#5548C8</item>
+        <item name="colorSecondary">#00B894</item>
+    </style>
+</resources>

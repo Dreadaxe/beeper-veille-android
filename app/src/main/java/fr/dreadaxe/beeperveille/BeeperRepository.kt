@@ -1,0 +1,133 @@
+package fr.dreadaxe.beeperveille
+
+import android.content.ContentResolver
+import android.net.Uri
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+class BeeperRepository(private val resolver: ContentResolver) {
+
+    suspend fun listDiscordRooms(limit: Int = 1000): List<BeeperRoom> = withContext(Dispatchers.IO) {
+        val out = mutableListOf<BeeperRoom>()
+        var offset = 0
+        val pageSize = 200
+        while (offset < limit) {
+            val uri = Uri.parse("content://com.beeper.api/chats").buildUpon()
+                .appendQueryParameter("protocol", "discord")
+                .appendQueryParameter("limit", pageSize.toString())
+                .appendQueryParameter("offset", offset.toString())
+                .build()
+            var rows = 0
+            resolver.query(uri, null, null, null, null)?.use { c ->
+                val roomIdx = c.getColumnIndexOrThrow("roomId")
+                val titleIdx = c.getColumnIndexOrThrow("title")
+                val protocolIdx = c.getColumnIndexOrThrow("protocol")
+                val unreadIdx = c.getColumnIndexOrThrow("unreadCount")
+                val tsIdx = c.getColumnIndexOrThrow("timestamp")
+                while (c.moveToNext()) {
+                    rows++
+                    out += BeeperRoom(
+                        roomId = c.getString(roomIdx) ?: "",
+                        title = c.getString(titleIdx) ?: "(sans nom)",
+                        protocol = c.getString(protocolIdx) ?: "discord",
+                        unreadCount = c.getInt(unreadIdx),
+                        timestamp = c.getLong(tsIdx)
+                    )
+                }
+            }
+            if (rows < pageSize) break
+            offset += pageSize
+        }
+        out.distinctBy { it.roomId }.sortedByDescending { it.timestamp }
+    }
+
+    suspend fun messagesSince(roomId: String, sinceMs: Long, untilMs: Long = Long.MAX_VALUE, maxMessages: Int = 10000): List<BeeperMessage> =
+        withContext(Dispatchers.IO) {
+            val total = countMessages(roomId)
+            if (total <= 0) return@withContext emptyList()
+
+            val pageSize = 300
+            val first = readPage(roomId, 0, minOf(pageSize, total))
+            if (first.isEmpty()) return@withContext emptyList()
+            val tailOffset = (total - pageSize).coerceAtLeast(0)
+            val tail = if (tailOffset == 0) first else readPage(roomId, tailOffset, pageSize)
+
+            val firstNewest = first.maxOfOrNull { it.timestamp } ?: 0L
+            val tailNewest = tail.maxOfOrNull { it.timestamp } ?: 0L
+            val newestAtHead = firstNewest >= tailNewest
+
+            val collected = LinkedHashMap<String, BeeperMessage>()
+            var offset = if (newestAtHead) 0 else tailOffset
+            var pages = 0
+            while (offset >= 0 && offset < total && collected.size < maxMessages && pages < 80) {
+                val page = when {
+                    offset == 0 -> first
+                    offset == tailOffset && tailOffset != 0 -> tail
+                    else -> readPage(roomId, offset, pageSize)
+                }
+                if (page.isEmpty()) break
+                page.forEach { m ->
+                    if (!m.deleted && m.timestamp in sinceMs..untilMs) collected[m.originalId] = m
+                }
+                pages++
+
+                val oldestOnPage = page.minOfOrNull { it.timestamp } ?: Long.MAX_VALUE
+                val newestOnPage = page.maxOfOrNull { it.timestamp } ?: 0L
+                if (oldestOnPage <= sinceMs && newestOnPage >= sinceMs) break
+                if (newestOnPage < sinceMs) break
+
+                offset = if (newestAtHead) offset + pageSize else offset - pageSize
+                if (!newestAtHead && offset < 0) break
+            }
+            collected.values.sortedBy { it.timestamp }
+        }
+
+    private fun countMessages(roomId: String): Int {
+        val uri = Uri.parse("content://com.beeper.api/messages/count").buildUpon()
+            .appendQueryParameter("roomIds", roomId)
+            .build()
+        return resolver.query(uri, null, null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getInt(c.getColumnIndexOrThrow("count")) else 0
+        } ?: 0
+    }
+
+    private fun normalizeTimestamp(value: Long): Long = if (value in 1..9_999_999_999L) value * 1000L else value
+
+    private fun readPage(roomId: String, offset: Int, limit: Int): List<BeeperMessage> {
+        val uri = Uri.parse("content://com.beeper.api/messages").buildUpon()
+            .appendQueryParameter("roomIds", roomId)
+            .appendQueryParameter("limit", limit.toString())
+            .appendQueryParameter("offset", offset.toString())
+            .build()
+        val out = mutableListOf<BeeperMessage>()
+        resolver.query(uri, null, null, null, null)?.use { c ->
+            val roomIdx = c.getColumnIndexOrThrow("roomId")
+            val idIdx = c.getColumnIndexOrThrow("originalId")
+            val senderIdx = c.getColumnIndexOrThrow("senderContactId")
+            val tsIdx = c.getColumnIndexOrThrow("timestamp")
+            val meIdx = c.getColumnIndexOrThrow("isSentByMe")
+            val deletedIdx = c.getColumnIndexOrThrow("isDeleted")
+            val typeIdx = c.getColumnIndexOrThrow("type")
+            val textIdx = c.getColumnIndexOrThrow("text_content")
+            val reactionsIdx = c.getColumnIndexOrThrow("reactions")
+            val displayIdx = c.getColumnIndexOrThrow("displayName")
+            val matchIdx = c.getColumnIndex("is_search_match")
+            while (c.moveToNext()) {
+                out += BeeperMessage(
+                    roomId = c.getString(roomIdx) ?: roomId,
+                    originalId = c.getString(idIdx) ?: "${c.getLong(tsIdx)}:${c.position}",
+                    senderId = c.getString(senderIdx) ?: "",
+                    timestamp = normalizeTimestamp(c.getLong(tsIdx)),
+                    sentByMe = c.getInt(meIdx) == 1,
+                    deleted = c.getInt(deletedIdx) == 1,
+                    type = c.getString(typeIdx) ?: "",
+                    text = c.getString(textIdx) ?: "",
+                    reactions = c.getString(reactionsIdx) ?: "",
+                    displayName = c.getString(displayIdx) ?: "Inconnu",
+                    searchMatch = matchIdx >= 0 && c.getInt(matchIdx) == 1
+                )
+            }
+        }
+        return out
+    }
+}
