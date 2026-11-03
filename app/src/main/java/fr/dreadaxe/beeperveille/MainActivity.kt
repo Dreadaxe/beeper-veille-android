@@ -82,7 +82,7 @@ class MainActivity : AppCompatActivity() {
             val info = packageManager.getPackageInfo("com.beeper.android", 0)
             info.versionName ?: "version inconnue"
         } catch (_: PackageManager.NameNotFoundException) {
-            "NON INSTALLÉ"
+            "non visible / non installé"
         }
 
         val provider = packageManager.resolveContentProvider("com.beeper.api", PackageManager.MATCH_ALL)
