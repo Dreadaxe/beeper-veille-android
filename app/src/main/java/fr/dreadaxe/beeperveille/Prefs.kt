@@ -10,6 +10,7 @@ object Prefs {
     private const val AUTO_ENABLED = "auto_enabled"
     private const val LAST_AUTO_PREFIX = "last_auto_"
     private const val LAST_MANUAL_PREFIX = "last_manual_"
+    private const val ROOM_ALIAS_PREFIX = "room_alias_"
 
     private fun p(context: Context) = context.getSharedPreferences(NAME, Context.MODE_PRIVATE)
 
@@ -30,4 +31,12 @@ object Prefs {
 
     fun lastManual(context: Context, roomId: String): Long = p(context).getLong(LAST_MANUAL_PREFIX + roomId, 0L)
     fun setLastManual(context: Context, roomId: String, value: Long) = p(context).edit().putLong(LAST_MANUAL_PREFIX + roomId, value).apply()
+
+    fun roomAlias(context: Context, roomId: String): String = p(context).getString(ROOM_ALIAS_PREFIX + roomId, "") ?: ""
+    fun setRoomAlias(context: Context, roomId: String, value: String) {
+        val e = p(context).edit()
+        if (value.isBlank()) e.remove(ROOM_ALIAS_PREFIX + roomId)
+        else e.putString(ROOM_ALIAS_PREFIX + roomId, value.trim())
+        e.apply()
+    }
 }
