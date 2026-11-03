@@ -80,7 +80,13 @@ class MainActivity : AppCompatActivity() {
                 allRooms = repo.listDiscordRooms()
                 roomMap = allRooms.associateBy { it.roomId }
                 renderRooms(b.searchRooms.text?.toString().orEmpty())
-                b.statusText.text = "${allRooms.size} salon(s) Discord trouvé(s)."
+                b.statusText.text = if (allRooms.isNotEmpty()) {
+                    val mode = if (repo.usedFallbackScan) " (détection de secours)" else ""
+                    "${allRooms.size} salon(s) Discord trouvé(s).$mode"
+                } else {
+                    val protocols = repo.lastProtocols.sorted().joinToString(", ").ifBlank { "aucun protocole visible" }
+                    "0 salon Discord. Beeper a renvoyé ${repo.lastRawChatCount} conversation(s). Protocoles vus : $protocols"
+                }
             } catch (e: Throwable) {
                 b.statusText.text = "Impossible de lire Beeper : ${e.message ?: e.javaClass.simpleName}"
             }
