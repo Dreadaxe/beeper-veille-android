@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.ArrayAdapter
@@ -73,19 +74,51 @@ class MainActivity : AppCompatActivity() {
         else beeperPermission.launch(permission)
     }
 
+    private fun diagnoseBeeper(): String {
+        val permission = "com.beeper.android.permission.READ_PERMISSION"
+        val readGranted = ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
+        val beeperVersion = try {
+            val info = packageManager.getPackageInfo("com.beeper.android", 0)
+            info.versionName ?: "version inconnue"
+        } catch (_: PackageManager.NameNotFoundException) {
+            "NON INSTALLÉ"
+        }
+
+        val provider = packageManager.resolveContentProvider("com.beeper.api", PackageManager.MATCH_ALL)
+        val providerText = if (provider == null) {
+            "absent"
+        } else {
+            "${provider.packageName} / exported=${provider.exported}"
+        }
+
+        val rawQuery = try {
+            val uri = Uri.parse("content://com.beeper.api/chats?limit=1")
+            val count = contentResolver.query(uri, null, null, null, null)?.use { it.count } ?: -1
+            "OK ($count ligne)"
+        } catch (e: SecurityException) {
+            "REFUSÉE: ${e.message ?: "permission"}"
+        } catch (e: Throwable) {
+            "ERREUR: ${e.javaClass.simpleName}: ${e.message ?: "sans détail"}"
+        }
+
+        return "Diagnostic — Beeper $beeperVersion • READ=${if (readGranted) "accordée" else "REFUSÉE"} • Provider=$providerText • Requête brute=$rawQuery"
+    }
+
     private fun loadRooms() {
         b.statusText.text = "Lecture des salons Discord depuis Beeper…"
         lifecycleScope.launch {
             try {
+                val diagnostic = diagnoseBeeper()
                 allRooms = repo.listDiscordRooms()
                 roomMap = allRooms.associateBy { it.roomId }
                 renderRooms(b.searchRooms.text?.toString().orEmpty())
                 b.statusText.text = if (allRooms.isNotEmpty()) {
                     val mode = if (repo.usedFallbackScan) " (détection de secours)" else ""
-                    "${allRooms.size} salon(s) Discord trouvé(s).$mode"
+                    "${allRooms.size} salon(s) Discord trouvé(s).$mode\n$diagnostic"
                 } else {
                     val protocols = repo.lastProtocols.sorted().joinToString(", ").ifBlank { "aucun protocole visible" }
-                    "0 salon Discord. Beeper a renvoyé ${repo.lastRawChatCount} conversation(s). Protocoles vus : $protocols"
+                    "0 salon Discord. Beeper a renvoyé ${repo.lastRawChatCount} conversation(s). Protocoles vus : $protocols\n$diagnostic"
                 }
             } catch (e: Throwable) {
                 b.statusText.text = "Impossible de lire Beeper : ${e.message ?: e.javaClass.simpleName}"
