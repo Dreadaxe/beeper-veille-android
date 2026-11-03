@@ -7,16 +7,49 @@ import kotlinx.coroutines.withContext
 
 class BeeperRepository(private val resolver: ContentResolver) {
 
+    @Volatile var lastRawChatCount: Int = 0
+        private set
+    @Volatile var lastProtocols: Set<String> = emptySet()
+        private set
+    @Volatile var usedFallbackScan: Boolean = false
+        private set
+
     suspend fun listDiscordRooms(limit: Int = 1000): List<BeeperRoom> = withContext(Dispatchers.IO) {
+        usedFallbackScan = false
+
+        // Fast path documented by Beeper.
+        val filtered = readChats(limit = limit, protocol = "discord")
+        if (filtered.isNotEmpty()) {
+            lastRawChatCount = filtered.size
+            lastProtocols = filtered.map { it.protocol }.filter { it.isNotBlank() }.toSet()
+            return@withContext filtered.distinctBy { it.roomId }.sortedByDescending { it.timestamp }
+        }
+
+        // Some Beeper builds/accounts may return 0 rows for protocol filtering.
+        // Fall back to an unfiltered scan and detect Discord client-side.
+        usedFallbackScan = true
+        val all = readChats(limit = limit, protocol = null)
+        lastRawChatCount = all.size
+        lastProtocols = all.map { it.protocol }.filter { it.isNotBlank() }.toSet()
+
+        all.filter { room ->
+            room.protocol.contains("discord", ignoreCase = true) ||
+                room.roomId.contains("discord", ignoreCase = true)
+        }.distinctBy { it.roomId }.sortedByDescending { it.timestamp }
+    }
+
+    private fun readChats(limit: Int, protocol: String?): List<BeeperRoom> {
         val out = mutableListOf<BeeperRoom>()
         var offset = 0
-        val pageSize = 200
+        val pageSize = 100
+
         while (offset < limit) {
-            val uri = Uri.parse("content://com.beeper.api/chats").buildUpon()
-                .appendQueryParameter("protocol", "discord")
+            val builder = Uri.parse("content://com.beeper.api/chats").buildUpon()
                 .appendQueryParameter("limit", pageSize.toString())
                 .appendQueryParameter("offset", offset.toString())
-                .build()
+            if (!protocol.isNullOrBlank()) builder.appendQueryParameter("protocol", protocol)
+            val uri = builder.build()
+
             var rows = 0
             resolver.query(uri, null, null, null, null)?.use { c ->
                 val roomIdx = c.getColumnIndexOrThrow("roomId")
@@ -24,21 +57,22 @@ class BeeperRepository(private val resolver: ContentResolver) {
                 val protocolIdx = c.getColumnIndexOrThrow("protocol")
                 val unreadIdx = c.getColumnIndexOrThrow("unreadCount")
                 val tsIdx = c.getColumnIndexOrThrow("timestamp")
+
                 while (c.moveToNext()) {
                     rows++
                     out += BeeperRoom(
                         roomId = c.getString(roomIdx) ?: "",
                         title = c.getString(titleIdx) ?: "(sans nom)",
-                        protocol = c.getString(protocolIdx) ?: "discord",
+                        protocol = c.getString(protocolIdx) ?: "",
                         unreadCount = c.getInt(unreadIdx),
-                        timestamp = c.getLong(tsIdx)
+                        timestamp = normalizeTimestamp(c.getLong(tsIdx))
                     )
                 }
             }
             if (rows < pageSize) break
             offset += pageSize
         }
-        out.distinctBy { it.roomId }.sortedByDescending { it.timestamp }
+        return out
     }
 
     suspend fun messagesSince(roomId: String, sinceMs: Long, untilMs: Long = Long.MAX_VALUE, maxMessages: Int = 10000): List<BeeperMessage> =
@@ -91,7 +125,8 @@ class BeeperRepository(private val resolver: ContentResolver) {
         } ?: 0
     }
 
-    private fun normalizeTimestamp(value: Long): Long = if (value in 1..9_999_999_999L) value * 1000L else value
+    private fun normalizeTimestamp(value: Long): Long =
+        if (value in 1..9_999_999_999L) value * 1000L else value
 
     private fun readPage(roomId: String, offset: Int, limit: Int): List<BeeperMessage> {
         val uri = Uri.parse("content://com.beeper.api/messages").buildUpon()
