@@ -4,6 +4,11 @@
     <uses-permission android:name="com.beeper.android.permission.READ_PERMISSION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <queries>
+        <package android:name="com.beeper.android" />
+        <provider android:authorities="com.beeper.api" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
