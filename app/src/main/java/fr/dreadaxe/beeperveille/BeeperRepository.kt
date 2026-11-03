@@ -13,6 +13,8 @@ class BeeperRepository(private val resolver: ContentResolver) {
         private set
     @Volatile var usedFallbackScan: Boolean = false
         private set
+    @Volatile var lastChatColumns: Set<String> = emptySet()
+        private set
 
     suspend fun listDiscordRooms(limit: Int = 1000): List<BeeperRoom> = withContext(Dispatchers.IO) {
         usedFallbackScan = false
@@ -57,15 +59,30 @@ class BeeperRepository(private val resolver: ContentResolver) {
                 val protocolIdx = c.getColumnIndexOrThrow("protocol")
                 val unreadIdx = c.getColumnIndexOrThrow("unreadCount")
                 val tsIdx = c.getColumnIndexOrThrow("timestamp")
+                val previewIdx = c.getColumnIndex("messagePreview")
+                lastChatColumns = c.columnNames.toSet()
+
+                val contextColumns = listOf(
+                    "serverName", "guildName", "guild_name",
+                    "spaceName", "spaceTitle", "space_name",
+                    "parentName", "parentTitle", "parent_name",
+                    "communityName", "workspaceName"
+                )
 
                 while (c.moveToNext()) {
                     rows++
+                    val contextLabel = contextColumns.firstNotNullOfOrNull { name ->
+                        val idx = c.getColumnIndex(name)
+                        if (idx >= 0) c.getString(idx)?.trim()?.takeIf { it.isNotBlank() } else null
+                    }.orEmpty()
                     out += BeeperRoom(
                         roomId = c.getString(roomIdx) ?: "",
                         title = c.getString(titleIdx) ?: "(sans nom)",
                         protocol = c.getString(protocolIdx) ?: "",
                         unreadCount = c.getInt(unreadIdx),
-                        timestamp = normalizeTimestamp(c.getLong(tsIdx))
+                        timestamp = normalizeTimestamp(c.getLong(tsIdx)),
+                        messagePreview = if (previewIdx >= 0) c.getString(previewIdx).orEmpty() else "",
+                        contextLabel = contextLabel
                     )
                 }
             }
