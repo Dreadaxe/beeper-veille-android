@@ -5,7 +5,9 @@ data class BeeperRoom(
     val title: String,
     val protocol: String,
     val unreadCount: Int,
-    val timestamp: Long
+    val timestamp: Long,
+    val messagePreview: String = "",
+    val contextLabel: String = ""
 )
 
 data class BeeperMessage(
