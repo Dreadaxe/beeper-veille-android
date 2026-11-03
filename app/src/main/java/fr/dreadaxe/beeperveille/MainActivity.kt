@@ -9,8 +9,10 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.ArrayAdapter
 import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.widget.doAfterTextChanged
@@ -129,16 +131,43 @@ class MainActivity : AppCompatActivity() {
     private fun renderRooms(query: String) {
         val selected = Prefs.selectedRooms(this)
         b.roomsContainer.removeAllViews()
-        val filtered = allRooms.filter { it.title.contains(query, true) }.take(250)
+        val q = query.trim()
+        val filtered = allRooms.filter { room ->
+            if (q.isBlank()) true
+            else listOf(
+                room.title,
+                room.contextLabel,
+                Prefs.roomAlias(this, room.roomId),
+                room.messagePreview,
+                shortRoomId(room.roomId)
+            ).any { it.contains(q, true) }
+        }.take(250)
+
         filtered.forEach { room ->
+            val server = roomServerLabel(room)
+            val channel = room.title.removePrefix("#")
+            val primary = if (server.isNotBlank()) {
+                "$server  ›  #$channel"
+            } else {
+                "#$channel"
+            }
+            val secondary = buildList {
+                if (room.unreadCount > 0) add("${room.unreadCount} non lu(s)")
+                room.messagePreview.replace(Regex("\\s+"), " ").trim()
+                    .takeIf { it.isNotBlank() }
+                    ?.let { add(if (it.length <= 90) it else it.take(89) + "…") }
+                add("ID ${shortRoomId(room.roomId)}")
+            }.joinToString("  •  ")
+
             val cb = CheckBox(this).apply {
-                text = buildString {
-                    append(room.title)
-                    if (room.unreadCount > 0) append("  • ${room.unreadCount} non lu(s)")
-                }
+                text = "$primary\n$secondary"
                 tag = room.roomId
                 isChecked = selected.contains(room.roomId)
                 setOnCheckedChangeListener { _, _ -> saveRoomSelection() }
+                setOnLongClickListener {
+                    editRoomAlias(room)
+                    true
+                }
             }
             b.roomsContainer.addView(cb)
         }
@@ -146,6 +175,50 @@ class MainActivity : AppCompatActivity() {
             val cb = CheckBox(this).apply { text = "Aucun salon ne correspond à « $query »"; isEnabled = false }
             b.roomsContainer.addView(cb)
         }
+    }
+
+    private fun roomServerLabel(room: BeeperRoom): String {
+        return Prefs.roomAlias(this, room.roomId).ifBlank { room.contextLabel }
+    }
+
+    private fun shortRoomId(roomId: String): String {
+        val core = roomId.substringBefore(':').removePrefix("!")
+        return if (core.length <= 8) core else core.takeLast(8)
+    }
+
+    private fun effectiveRoomMap(): Map<String, BeeperRoom> {
+        return roomMap.mapValues { (_, room) ->
+            val server = roomServerLabel(room)
+            val channel = room.title.removePrefix("#")
+            val display = if (server.isNotBlank()) {
+                "$server › #$channel"
+            } else {
+                "#$channel [${shortRoomId(room.roomId)}]"
+            }
+            room.copy(title = display)
+        }
+    }
+
+    private fun editRoomAlias(room: BeeperRoom) {
+        val input = EditText(this).apply {
+            hint = "Nom du serveur Discord"
+            setText(Prefs.roomAlias(this@MainActivity, room.roomId).ifBlank { room.contextLabel })
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Identifier #${room.title.removePrefix("#")}")
+            .setMessage("Donne un nom au serveur Discord pour distinguer ce salon. Ce libellé sera mémorisé pour ce salon et utilisé dans les exports.")
+            .setView(input)
+            .setPositiveButton("Enregistrer") { _, _ ->
+                Prefs.setRoomAlias(this, room.roomId, input.text?.toString().orEmpty())
+                renderRooms(b.searchRooms.text?.toString().orEmpty())
+            }
+            .setNeutralButton("Effacer") { _, _ ->
+                Prefs.setRoomAlias(this, room.roomId, "")
+                renderRooms(b.searchRooms.text?.toString().orEmpty())
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
     }
 
     private fun currentSelectedRooms(): Set<String> {
@@ -185,7 +258,7 @@ class MainActivity : AppCompatActivity() {
                     if (newest != null) Prefs.setLastManual(this@MainActivity, roomId, newest)
                 }
                 loadedMessages = all.distinctBy { it.originalId }.sortedBy { it.timestamp }
-                b.digestText.text = DigestBuilder.localDigest(roomMap, loadedMessages, loadedWords)
+                b.digestText.text = DigestBuilder.localDigest(effectiveRoomMap(), loadedMessages, loadedWords)
                 b.statusText.text = "${loadedMessages.size} message(s) retenu(s)."
                 b.exportButton.isEnabled = loadedMessages.isNotEmpty()
                 b.shareChatgptButton.isEnabled = loadedMessages.isNotEmpty()
@@ -211,13 +284,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun exportTxt() {
-        pendingExport = DigestBuilder.rawTxt(roomMap, loadedMessages, loadedWords)
+        pendingExport = DigestBuilder.rawTxt(effectiveRoomMap(), loadedMessages, loadedWords)
         val date = LocalDate.now().toString()
         createTxt.launch("Beeper_Veille_$date.txt")
     }
 
     private fun shareToChatGpt() {
-        var text = DigestBuilder.chatGptPrompt(roomMap, loadedMessages, loadedWords)
+        var text = DigestBuilder.chatGptPrompt(effectiveRoomMap(), loadedMessages, loadedWords)
         if (text.length > 180_000) text = text.take(180_000) + "\n\n[Export tronqué par l'application : réduire la période ou les salons pour tout transmettre.]"
         val direct = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
