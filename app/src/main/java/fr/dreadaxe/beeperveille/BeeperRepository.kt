@@ -92,7 +92,7 @@ class BeeperRepository(private val resolver: ContentResolver) {
         return out
     }
 
-    suspend fun messagesSince(roomId: String, sinceMs: Long, untilMs: Long = Long.MAX_VALUE, maxMessages: Int = 10000): List<BeeperMessage> =
+    suspend fun messagesSince(roomId: String, sinceMs: Long, untilMs: Long = Long.MAX_VALUE, maxMessages: Int = Int.MAX_VALUE): List<BeeperMessage> =
         withContext(Dispatchers.IO) {
             val total = countMessages(roomId)
             if (total <= 0) return@withContext emptyList()
@@ -109,8 +109,7 @@ class BeeperRepository(private val resolver: ContentResolver) {
 
             val collected = LinkedHashMap<String, BeeperMessage>()
             var offset = if (newestAtHead) 0 else tailOffset
-            var pages = 0
-            while (offset >= 0 && offset < total && collected.size < maxMessages && pages < 80) {
+            while (offset >= 0 && offset < total && collected.size < maxMessages) {
                 val page = when {
                     offset == 0 -> first
                     offset == tailOffset && tailOffset != 0 -> tail
@@ -120,8 +119,6 @@ class BeeperRepository(private val resolver: ContentResolver) {
                 page.forEach { m ->
                     if (!m.deleted && m.timestamp in sinceMs..untilMs) collected[m.originalId] = m
                 }
-                pages++
-
                 val oldestOnPage = page.minOfOrNull { it.timestamp } ?: Long.MAX_VALUE
                 val newestOnPage = page.maxOfOrNull { it.timestamp } ?: 0L
                 if (oldestOnPage <= sinceMs && newestOnPage >= sinceMs) break
@@ -132,6 +129,35 @@ class BeeperRepository(private val resolver: ContentResolver) {
             }
             collected.values.sortedBy { it.timestamp }
         }
+
+    suspend fun allMessages(
+        roomId: String,
+        progress: (fetched: Int, total: Int) -> Unit = { _, _ -> }
+    ): List<BeeperMessage> = withContext(Dispatchers.IO) {
+        val total = countMessages(roomId)
+        if (total <= 0) return@withContext emptyList()
+
+        val pageSize = 500
+        val collected = LinkedHashMap<String, BeeperMessage>()
+        var offset = 0
+
+        while (offset < total) {
+            val page = readPage(roomId, offset, minOf(pageSize, total - offset))
+            if (page.isEmpty()) break
+            page.forEach { m -> collected[m.originalId] = m }
+            offset += page.size
+            progress(collected.size, total)
+
+            // Defensive guard in case a provider returns fewer rows without being at the end.
+            if (page.size < pageSize && offset < total) {
+                offset = ((offset / pageSize) + 1) * pageSize
+            }
+        }
+
+        collected.values.sortedBy { it.timestamp }
+    }
+
+    fun messageCount(roomId: String): Int = countMessages(roomId)
 
     private fun countMessages(roomId: String): Int {
         val uri = Uri.parse("content://com.beeper.api/messages/count").buildUpon()
