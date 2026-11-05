@@ -25,7 +25,12 @@ object DigestBuilder {
         return indexes.sorted().map { messages[it] }
     }
 
-    fun localDigest(rooms: Map<String, BeeperRoom>, messages: List<BeeperMessage>, words: List<String>): String {
+    fun localDigest(
+        rooms: Map<String, BeeperRoom>,
+        messages: List<BeeperMessage>,
+        words: List<String>,
+        links: Map<String, String> = emptyMap()
+    ): String {
         if (messages.isEmpty()) return "Aucun message correspondant à la période et aux filtres."
         val byDay = messages.groupBy { dayFmt.format(Date(it.timestamp)) }
         return buildString {
@@ -47,14 +52,22 @@ object DigestBuilder {
                         .sortedWith(compareByDescending<BeeperMessage> { m -> words.count { m.text.contains(it, true) } }.thenByDescending { it.text.length })
                         .take(6)
                         .sortedBy { it.timestamp }
-                        .forEach { m -> appendLine("  ${timeFmt.format(Date(m.timestamp))} ${m.displayName}: ${oneLine(m.text, 220)}") }
+                        .forEach { m ->
+                            appendLine("  ${timeFmt.format(Date(m.timestamp))} ${m.displayName}: ${oneLine(m.text, 220)}")
+                            links[m.originalId]?.let { appendLine("    ↗ $it") }
+                        }
                     appendLine()
                 }
             }
         }.trim()
     }
 
-    fun rawTxt(rooms: Map<String, BeeperRoom>, messages: List<BeeperMessage>, words: List<String>): String = buildString {
+    fun rawTxt(
+        rooms: Map<String, BeeperRoom>,
+        messages: List<BeeperMessage>,
+        words: List<String>,
+        links: Map<String, String> = emptyMap()
+    ): String = buildString {
         appendLine("BEEPER VEILLE — EXPORT DISCORD")
         appendLine("Export généré : ${fullFmt.format(Date())}")
         if (words.isNotEmpty()) appendLine("Filtre mots-clés : ${words.joinToString(", ")}")
@@ -77,12 +90,18 @@ object DigestBuilder {
             appendLine("[${timeFmt.format(Date(m.timestamp))}] ${m.displayName}$marker")
             appendLine(m.text.ifBlank { "[${m.type}]" })
             if (m.reactions.isNotBlank()) appendLine("Réactions : ${m.reactions}")
+            links[m.originalId]?.let { appendLine("Lien Discord : $it") }
             appendLine()
         }
     }
 
-    fun chatGptPrompt(rooms: Map<String, BeeperRoom>, messages: List<BeeperMessage>, words: List<String>): String {
-        val raw = rawTxt(rooms, messages, words)
+    fun chatGptPrompt(
+        rooms: Map<String, BeeperRoom>,
+        messages: List<BeeperMessage>,
+        words: List<String>,
+        links: Map<String, String> = emptyMap()
+    ): String {
+        val raw = rawTxt(rooms, messages, words, links)
         val header = """
             Je veux une veille concise de ces discussions Discord récupérées via Beeper.
             Fais un condensé JOUR PAR JOUR et SALON PAR SALON.
