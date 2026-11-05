@@ -163,25 +163,37 @@ class MainActivity : AppCompatActivity() {
             ).any { it.contains(q, true) }
         }.take(250)
 
+        val duplicateTitles = allRooms
+            .groupingBy { it.title.removePrefix("#").lowercase(Locale.FRENCH) }
+            .eachCount()
+
         filtered.forEach { room ->
             val server = roomServerLabel(room)
             val channel = room.title.removePrefix("#")
-            val primary = if (server.isNotBlank()) {
-                "$server  ›  #$channel"
+            val isDuplicate = (duplicateTitles[channel.lowercase(Locale.FRENCH)] ?: 0) > 1
+            val serverLine = if (server.isNotBlank()) {
+                "Serveur : $server"
             } else {
-                "#$channel"
+                "Serveur : non renseigné — appui long pour l’ajouter"
             }
-            val secondary = buildList {
+            val preview = room.messagePreview.replace(Regex("\\s+"), " ").trim()
+                .takeIf { it.isNotBlank() }
+                ?.let { if (it.length <= 100) it else it.take(99) + "…" }
+
+            val meta = buildList {
                 if (room.unreadCount > 0) add("${room.unreadCount} non lu(s)")
-                room.messagePreview.replace(Regex("\\s+"), " ").trim()
-                    .takeIf { it.isNotBlank() }
-                    ?.let { add(if (it.length <= 90) it else it.take(89) + "…") }
                 if (Prefs.roomUrl(this@MainActivity, room.roomId).isNotBlank()) add("🔗 Discord")
+                if (isDuplicate && server.isBlank()) add("⚠ nom de salon dupliqué")
                 add("ID ${shortRoomId(room.roomId)}")
             }.joinToString("  •  ")
 
             val cb = CheckBox(this).apply {
-                text = "$primary\n$secondary"
+                text = buildString {
+                    append("#$channel")
+                    append("\n$serverLine")
+                    if (preview != null) append("\nDernier message : $preview")
+                    append("\n$meta")
+                }
                 tag = room.roomId
                 isChecked = selected.contains(room.roomId)
                 setOnCheckedChangeListener { _, _ -> saveRoomSelection() }
