@@ -24,6 +24,39 @@
             android:layout_marginTop="6dp"
             android:text="Connexion à Beeper…" />
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="Veilles enregistrées"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:id="@+id/savedWatchesContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <EditText
+            android:id="@+id/watchNameInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Nom de la veille (ex. Halflings)"
+            android:inputType="text" />
+
+        <Button
+            android:id="@+id/saveWatchButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Enregistrer cette veille" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="Recherche ponctuelle / configuration"
+            android:textStyle="bold" />
+
         <EditText
             android:id="@+id/searchRooms"
             android:layout_width="match_parent"
@@ -124,7 +157,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
-            android:text="Veille automatique"
+            android:text="Automatisation de cette veille"
             android:textStyle="bold" />
 
         <Spinner
