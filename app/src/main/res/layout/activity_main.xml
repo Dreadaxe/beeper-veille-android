@@ -44,11 +44,25 @@
             android:hint="Nom de la veille (ex. Halflings)"
             android:inputType="text" />
 
-        <Button
-            android:id="@+id/saveWatchButton"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Enregistrer cette veille" />
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/newWatchButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Nouvelle" />
+
+            <Button
+                android:id="@+id/saveWatchButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="Enregistrer cette veille" />
+        </LinearLayout>
 
         <TextView
             android:layout_width="wrap_content"
@@ -183,6 +197,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:fontFamily="monospace"
+            android:autoLink="web"
+            android:linksClickable="true"
             android:paddingTop="8dp"
             android:text="Aucune veille chargée." />
     </LinearLayout>
