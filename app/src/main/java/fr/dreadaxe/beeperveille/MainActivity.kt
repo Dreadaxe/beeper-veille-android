@@ -310,7 +310,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 loadedMessages = all.distinctBy { it.originalId }.sortedBy { it.timestamp }
-                b.digestText.text = DigestBuilder.localDigest(effectiveRoomMap(), loadedMessages, loadedWords)
+                b.digestText.text = DigestBuilder.localDigest(effectiveRoomMap(), loadedMessages, loadedWords, messageLinks())
 
                 val oldest = loadedMessages.minOfOrNull { it.timestamp }
                 val oldestText = oldest?.let {
@@ -348,8 +348,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun messageLinks(): Map<String, String> {
+        val out = mutableMapOf<String, String>()
+        loadedMessages.forEach { m ->
+            val base = Prefs.roomUrl(this, m.roomId)
+            if (base.isBlank()) return@forEach
+            val snowflake = Regex("""\d{15,22}""").findAll(m.originalId).lastOrNull()?.value
+            if (snowflake != null) out[m.originalId] = "$base/$snowflake"
+        }
+        return out
+    }
+
     private fun currentRawExport(): String =
-        DigestBuilder.rawTxt(effectiveRoomMap(), loadedMessages, loadedWords)
+        DigestBuilder.rawTxt(effectiveRoomMap(), loadedMessages, loadedWords, messageLinks())
 
     private fun copyExport() {
         val text = currentRawExport()
@@ -392,7 +403,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun shareToChatGpt() {
-        var text = DigestBuilder.chatGptPrompt(effectiveRoomMap(), loadedMessages, loadedWords)
+        var text = DigestBuilder.chatGptPrompt(effectiveRoomMap(), loadedMessages, loadedWords, messageLinks())
         if (text.length > 180_000) text = text.take(180_000) + "\n\n[Export tronqué par l'application : réduire la période ou les salons pour tout transmettre.]"
         val direct = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
