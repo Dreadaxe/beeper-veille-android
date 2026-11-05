@@ -70,13 +70,14 @@ class MainActivity : AppCompatActivity() {
         val savedHours = Prefs.intervalHours(this)
         b.watchIntervalSpinner.setSelection(listOf(1L,6L,12L,24L).indexOf(savedHours).coerceAtLeast(0))
         b.keywordsInput.setText(Prefs.keywords(this))
-        b.watchSwitch.isChecked = Prefs.autoEnabled(this)
+        b.watchSwitch.isChecked = false
 
         WorkManager.getInstance(this).cancelUniqueWork(WORK_NAME)
         renderSavedWatches()
 
         b.searchRooms.doAfterTextChanged { renderRooms(it?.toString().orEmpty()) }
         b.reloadRoomsButton.setOnClickListener { loadRooms() }
+        b.newWatchButton.setOnClickListener { newWatch() }
         b.saveWatchButton.setOnClickListener { saveCurrentWatch() }
         b.loadButton.setOnClickListener { loadWatch(activeWatchId) }
         b.copyButton.setOnClickListener { copyExport() }
@@ -414,6 +415,19 @@ class MainActivity : AppCompatActivity() {
             direct.setPackage(null)
             startActivity(Intent.createChooser(direct, "Partager pour faire le condensé"))
         }
+    }
+
+    private fun newWatch() {
+        activeWatchId = null
+        b.watchNameInput.setText("")
+        Prefs.setSelectedRooms(this, emptySet())
+        b.keywordsInput.setText("")
+        b.periodSpinner.setSelection(0)
+        b.contextCheck.isChecked = true
+        b.watchSwitch.isChecked = false
+        b.watchIntervalSpinner.setSelection(1)
+        renderRooms(b.searchRooms.text?.toString().orEmpty())
+        toast("Nouvelle veille : choisis les salons et paramètres.")
     }
 
     private fun renderSavedWatches() {
