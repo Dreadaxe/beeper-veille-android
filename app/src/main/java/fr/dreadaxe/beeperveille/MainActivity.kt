@@ -11,8 +11,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.ArrayAdapter
+import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -21,6 +23,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.lifecycleScope
+import androidx.work.Data
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -33,6 +36,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
@@ -43,6 +47,7 @@ class MainActivity : AppCompatActivity() {
     private var loadedMessages: List<BeeperMessage> = emptyList()
     private var loadedWords: List<String> = emptyList()
     private var pendingExport = ""
+    private var activeWatchId: String? = null
 
     private val beeperPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) loadRooms() else b.statusText.text = "Autorisation Beeper refusée."
@@ -67,15 +72,19 @@ class MainActivity : AppCompatActivity() {
         b.keywordsInput.setText(Prefs.keywords(this))
         b.watchSwitch.isChecked = Prefs.autoEnabled(this)
 
+        WorkManager.getInstance(this).cancelUniqueWork(WORK_NAME)
+        renderSavedWatches()
+
         b.searchRooms.doAfterTextChanged { renderRooms(it?.toString().orEmpty()) }
         b.reloadRoomsButton.setOnClickListener { loadRooms() }
-        b.loadButton.setOnClickListener { loadWatch() }
+        b.saveWatchButton.setOnClickListener { saveCurrentWatch() }
+        b.loadButton.setOnClickListener { loadWatch(activeWatchId) }
         b.copyButton.setOnClickListener { copyExport() }
         b.shareButton.setOnClickListener { shareExport() }
         b.exportButton.setOnClickListener { exportTxt() }
         b.shareChatgptButton.setOnClickListener { shareToChatGpt() }
-        b.watchSwitch.setOnCheckedChangeListener { _, checked -> configureWatch(checked) }
-        b.watchIntervalSpinner.setOnItemSelectedListener(SimpleItemSelectedListener { if (b.watchSwitch.isChecked) configureWatch(true) })
+        b.watchSwitch.setOnCheckedChangeListener { _, _ -> }
+        b.watchIntervalSpinner.setOnItemSelectedListener(SimpleItemSelectedListener { })
 
         requestBeeperAccess()
     }
@@ -166,6 +175,7 @@ class MainActivity : AppCompatActivity() {
                 room.messagePreview.replace(Regex("\\s+"), " ").trim()
                     .takeIf { it.isNotBlank() }
                     ?.let { add(if (it.length <= 90) it else it.take(89) + "…") }
+                if (Prefs.roomUrl(this@MainActivity, room.roomId).isNotBlank()) add("🔗 Discord")
                 add("ID ${shortRoomId(room.roomId)}")
             }.joinToString("  •  ")
 
@@ -210,21 +220,34 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun editRoomAlias(room: BeeperRoom) {
-        val input = EditText(this).apply {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val p = (16 * resources.displayMetrics.density).toInt()
+            setPadding(p, 0, p, 0)
+        }
+        val alias = EditText(this).apply {
             hint = "Nom du serveur Discord"
             setText(Prefs.roomAlias(this@MainActivity, room.roomId).ifBlank { room.contextLabel })
-            selectAll()
         }
+        val url = EditText(this).apply {
+            hint = "URL du salon Discord (facultatif)"
+            setText(Prefs.roomUrl(this@MainActivity, room.roomId))
+        }
+        box.addView(alias)
+        box.addView(url)
+
         AlertDialog.Builder(this)
             .setTitle("Identifier #${room.title.removePrefix("#")}")
-            .setMessage("Donne un nom au serveur Discord pour distinguer ce salon. Ce libellé sera mémorisé pour ce salon et utilisé dans les exports.")
-            .setView(input)
+            .setMessage("Tu peux ajouter le nom du serveur et, si nécessaire, coller manuellement l’URL Discord du salon. Elle servira à créer des liens directs vers les messages quand l’identifiant du message est exploitable.")
+            .setView(box)
             .setPositiveButton("Enregistrer") { _, _ ->
-                Prefs.setRoomAlias(this, room.roomId, input.text?.toString().orEmpty())
+                Prefs.setRoomAlias(this, room.roomId, alias.text?.toString().orEmpty())
+                Prefs.setRoomUrl(this, room.roomId, url.text?.toString().orEmpty())
                 renderRooms(b.searchRooms.text?.toString().orEmpty())
             }
             .setNeutralButton("Effacer") { _, _ ->
                 Prefs.setRoomAlias(this, room.roomId, "")
+                Prefs.setRoomUrl(this, room.roomId, "")
                 renderRooms(b.searchRooms.text?.toString().orEmpty())
             }
             .setNegativeButton("Annuler", null)
@@ -247,7 +270,7 @@ class MainActivity : AppCompatActivity() {
         Prefs.setSelectedRooms(this, keptHidden + visible)
     }
 
-    private fun loadWatch() {
+    private fun loadWatch(watchId: String? = null) {
         saveRoomSelection()
         val selected = Prefs.selectedRooms(this)
         if (selected.isEmpty()) { toast("Choisis au moins un salon."); return }
@@ -270,7 +293,7 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
                     } else {
-                        val (since, until) = periodBounds(roomId, now)
+                        val (since, until) = periodBounds(roomId, now, watchId)
                         repo.messagesSince(roomId, since, until)
                     }
 
@@ -280,7 +303,10 @@ class MainActivity : AppCompatActivity() {
 
                     all += filtered
                     val newest = msgs.maxOfOrNull { it.timestamp }
-                    if (newest != null) Prefs.setLastManual(this@MainActivity, roomId, newest)
+                    if (newest != null) {
+                        if (watchId != null) Prefs.setLastWatchRun(this@MainActivity, watchId, roomId, newest)
+                        else Prefs.setLastManual(this@MainActivity, roomId, newest)
+                    }
                 }
 
                 loadedMessages = all.distinctBy { it.originalId }.sortedBy { it.timestamp }
@@ -309,12 +335,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun periodBounds(roomId: String, now: Long): Pair<Long, Long> {
+    private fun periodBounds(roomId: String, now: Long, watchId: String? = null): Pair<Long, Long> {
         val zone = ZoneId.systemDefault()
         fun start(day: LocalDate) = day.atStartOfDay(zone).toInstant().toEpochMilli()
         val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
         return when (b.periodSpinner.selectedItemPosition) {
-            0 -> (Prefs.lastManual(this, roomId).takeIf { it > 0 } ?: start(today)) to now
+            0 -> ((watchId?.let { Prefs.lastWatchRun(this, it, roomId) } ?: Prefs.lastManual(this, roomId)).takeIf { it > 0 } ?: start(today)) to now
             1 -> start(today) to now
             2 -> start(today.minusDays(1)) to (start(today) - 1)
             3 -> start(today.minusDays(6)) to now
@@ -378,6 +404,110 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent.createChooser(direct, "Partager pour faire le condensé"))
         }
     }
+
+    private fun renderSavedWatches() {
+        b.savedWatchesContainer.removeAllViews()
+        val watches = Prefs.savedWatches(this)
+        if (watches.isEmpty()) {
+            val empty = android.widget.TextView(this).apply { text = "Aucune veille enregistrée." }
+            b.savedWatchesContainer.addView(empty)
+            return
+        }
+
+        watches.forEach { watch ->
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val run = Button(this).apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                val mode = if (watch.autoEnabled) "AUTO ${watch.intervalHours} h" else "MANUEL"
+                text = "▶  ${watch.name}  •  $mode"
+                setOnClickListener {
+                    applyWatchConfig(watch)
+                    loadWatch(watch.id)
+                }
+                setOnLongClickListener {
+                    applyWatchConfig(watch)
+                    toast("Veille « ${watch.name} » chargée pour modification.")
+                    true
+                }
+            }
+            val del = Button(this).apply {
+                text = "×"
+                setOnClickListener {
+                    WorkManager.getInstance(this@MainActivity).cancelUniqueWork(savedWorkName(watch.id))
+                    Prefs.deleteWatch(this@MainActivity, watch.id)
+                    if (activeWatchId == watch.id) activeWatchId = null
+                    renderSavedWatches()
+                }
+            }
+            row.addView(run)
+            row.addView(del)
+            b.savedWatchesContainer.addView(row)
+        }
+    }
+
+    private fun saveCurrentWatch() {
+        saveRoomSelection()
+        val name = b.watchNameInput.text?.toString()?.trim().orEmpty()
+        if (name.isBlank()) {
+            toast("Donne un nom à la veille.")
+            return
+        }
+        val rooms = Prefs.selectedRooms(this)
+        if (rooms.isEmpty()) {
+            toast("Choisis au moins un salon.")
+            return
+        }
+        val hours = listOf(1L, 6L, 12L, 24L)[b.watchIntervalSpinner.selectedItemPosition.coerceIn(0, 3)]
+        val id = activeWatchId ?: UUID.randomUUID().toString()
+        val watch = WatchConfig(
+            id = id,
+            name = name,
+            roomIds = rooms,
+            keywords = b.keywordsInput.text?.toString().orEmpty(),
+            periodIndex = b.periodSpinner.selectedItemPosition,
+            includeContext = b.contextCheck.isChecked,
+            autoEnabled = b.watchSwitch.isChecked,
+            intervalHours = hours
+        )
+        Prefs.saveWatch(this, watch)
+        activeWatchId = id
+        scheduleSavedWatch(watch)
+        renderSavedWatches()
+        toast("Veille « $name » enregistrée.")
+    }
+
+    private fun applyWatchConfig(watch: WatchConfig) {
+        activeWatchId = watch.id
+        b.watchNameInput.setText(watch.name)
+        Prefs.setSelectedRooms(this, watch.roomIds)
+        b.keywordsInput.setText(watch.keywords)
+        b.periodSpinner.setSelection(watch.periodIndex.coerceIn(0, 5))
+        b.contextCheck.isChecked = watch.includeContext
+        b.watchSwitch.isChecked = watch.autoEnabled
+        b.watchIntervalSpinner.setSelection(listOf(1L, 6L, 12L, 24L).indexOf(watch.intervalHours).coerceAtLeast(0))
+        renderRooms(b.searchRooms.text?.toString().orEmpty())
+    }
+
+    private fun scheduleSavedWatch(watch: WatchConfig) {
+        val wm = WorkManager.getInstance(this)
+        val workName = savedWorkName(watch.id)
+        if (!watch.autoEnabled) {
+            wm.cancelUniqueWork(workName)
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        val data = Data.Builder().putString("watchId", watch.id).build()
+        val req = PeriodicWorkRequestBuilder<WatchWorker>(watch.intervalHours.coerceAtLeast(1), TimeUnit.HOURS)
+            .setInputData(data)
+            .build()
+        wm.enqueueUniquePeriodicWork(workName, ExistingPeriodicWorkPolicy.UPDATE, req)
+    }
+
+    private fun savedWorkName(id: String) = "beeper_saved_watch_$id"
 
     private fun configureWatch(enabled: Boolean) {
         saveRoomSelection()
