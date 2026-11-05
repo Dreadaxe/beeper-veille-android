@@ -2,6 +2,9 @@ package fr.dreadaxe.beeperveille
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -15,6 +18,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.widget.doAfterTextChanged
 import androidx.lifecycle.lifecycleScope
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -22,9 +26,13 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import fr.dreadaxe.beeperveille.databinding.ActivityMainBinding
 import kotlinx.coroutines.launch
+import java.io.File
+import java.text.SimpleDateFormat
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
@@ -51,7 +59,7 @@ class MainActivity : AppCompatActivity() {
         repo = BeeperRepository(contentResolver)
 
         b.periodSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
-            listOf("Depuis le dernier passage", "Aujourd'hui", "Hier", "7 derniers jours", "30 derniers jours"))
+            listOf("Depuis le dernier passage", "Aujourd'hui", "Hier", "7 derniers jours", "30 derniers jours", "Tout l'historique Beeper"))
         b.watchIntervalSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
             listOf("Toutes les heures", "Toutes les 6 h", "Toutes les 12 h", "Toutes les 24 h"))
         val savedHours = Prefs.intervalHours(this)
@@ -62,6 +70,8 @@ class MainActivity : AppCompatActivity() {
         b.searchRooms.doAfterTextChanged { renderRooms(it?.toString().orEmpty()) }
         b.reloadRoomsButton.setOnClickListener { loadRooms() }
         b.loadButton.setOnClickListener { loadWatch() }
+        b.copyButton.setOnClickListener { copyExport() }
+        b.shareButton.setOnClickListener { shareExport() }
         b.exportButton.setOnClickListener { exportTxt() }
         b.shareChatgptButton.setOnClickListener { shareToChatGpt() }
         b.watchSwitch.setOnCheckedChangeListener { _, checked -> configureWatch(checked) }
@@ -249,19 +259,48 @@ class MainActivity : AppCompatActivity() {
             try {
                 val now = System.currentTimeMillis()
                 val all = mutableListOf<BeeperMessage>()
+                val fullHistory = b.periodSpinner.selectedItemPosition == 5
+
                 selected.forEach { roomId ->
-                    val (since, until) = periodBounds(roomId, now)
-                    val msgs = repo.messagesSince(roomId, since, until)
-                    val filtered = if (loadedWords.isNotEmpty()) DigestBuilder.selectKeywordContext(msgs, loadedWords, if (b.contextCheck.isChecked) 2 else 0) else msgs
+                    val roomName = effectiveRoomMap()[roomId]?.title ?: roomMap[roomId]?.title ?: roomId
+                    val msgs = if (fullHistory) {
+                        repo.allMessages(roomId) { fetched, total ->
+                            runOnUiThread {
+                                b.statusText.text = "Historique complet — $roomName : $fetched / $total message(s)…"
+                            }
+                        }
+                    } else {
+                        val (since, until) = periodBounds(roomId, now)
+                        repo.messagesSince(roomId, since, until)
+                    }
+
+                    val filtered = if (loadedWords.isNotEmpty()) {
+                        DigestBuilder.selectKeywordContext(msgs, loadedWords, if (b.contextCheck.isChecked) 2 else 0)
+                    } else msgs
+
                     all += filtered
                     val newest = msgs.maxOfOrNull { it.timestamp }
                     if (newest != null) Prefs.setLastManual(this@MainActivity, roomId, newest)
                 }
+
                 loadedMessages = all.distinctBy { it.originalId }.sortedBy { it.timestamp }
                 b.digestText.text = DigestBuilder.localDigest(effectiveRoomMap(), loadedMessages, loadedWords)
-                b.statusText.text = "${loadedMessages.size} message(s) retenu(s)."
-                b.exportButton.isEnabled = loadedMessages.isNotEmpty()
-                b.shareChatgptButton.isEnabled = loadedMessages.isNotEmpty()
+
+                val oldest = loadedMessages.minOfOrNull { it.timestamp }
+                val oldestText = oldest?.let {
+                    SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.FRENCH).format(Date(it))
+                }
+                b.statusText.text = buildString {
+                    append("${loadedMessages.size} message(s) retenu(s).")
+                    if (oldestText != null) append(" Plus ancien : $oldestText.")
+                    if (fullHistory) append(" Historique Beeper parcouru jusqu'au bout.")
+                }
+
+                val hasMessages = loadedMessages.isNotEmpty()
+                b.copyButton.isEnabled = hasMessages
+                b.shareButton.isEnabled = hasMessages
+                b.exportButton.isEnabled = hasMessages
+                b.shareChatgptButton.isEnabled = hasMessages
             } catch (e: Throwable) {
                 b.statusText.text = "Erreur : ${e.message ?: e.javaClass.simpleName}"
             } finally {
@@ -283,8 +322,45 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun currentRawExport(): String =
+        DigestBuilder.rawTxt(effectiveRoomMap(), loadedMessages, loadedWords)
+
+    private fun copyExport() {
+        val text = currentRawExport()
+        if (text.length > 500_000) {
+            toast("Texte trop long pour un collage fiable. Utilise Partager : l'app enverra un fichier TXT.")
+            return
+        }
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Beeper Veille", text))
+        toast("Veille copiée dans le presse-papiers.")
+    }
+
+    private fun shareExport() {
+        val text = currentRawExport()
+        if (text.length <= 180_000) {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            startActivity(Intent.createChooser(intent, "Partager la veille"))
+            return
+        }
+
+        val dir = File(cacheDir, "shared").apply { mkdirs() }
+        val file = File(dir, "Beeper_Veille_${LocalDate.now()}.txt")
+        file.writeText(text, Charsets.UTF_8)
+        val uri = FileProvider.getUriForFile(this, "${packageName}.files", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(intent, "Partager la veille (fichier TXT)"))
+    }
+
     private fun exportTxt() {
-        pendingExport = DigestBuilder.rawTxt(effectiveRoomMap(), loadedMessages, loadedWords)
+        pendingExport = currentRawExport()
         val date = LocalDate.now().toString()
         createTxt.launch("Beeper_Veille_$date.txt")
     }
