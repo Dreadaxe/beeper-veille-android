@@ -148,10 +148,6 @@ class BeeperRepository(private val resolver: ContentResolver) {
             offset += page.size
             progress(collected.size, total)
 
-            // Defensive guard in case a provider returns fewer rows without being at the end.
-            if (page.size < pageSize && offset < total) {
-                offset = ((offset / pageSize) + 1) * pageSize
-            }
         }
 
         collected.values.sortedBy { it.timestamp }
