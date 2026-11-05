@@ -23,3 +23,14 @@ data class BeeperMessage(
     val displayName: String,
     val searchMatch: Boolean = false
 )
+
+data class WatchConfig(
+    val id: String,
+    val name: String,
+    val roomIds: Set<String>,
+    val keywords: String,
+    val periodIndex: Int,
+    val includeContext: Boolean,
+    val autoEnabled: Boolean,
+    val intervalHours: Long
+)
