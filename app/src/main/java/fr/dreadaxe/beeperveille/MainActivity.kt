@@ -9,6 +9,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.text.Spannable
+import android.text.SpannableStringBuilder
+import android.text.style.StyleSpan
+import android.graphics.Typeface
 import android.os.Bundle
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -152,7 +156,12 @@ class MainActivity : AppCompatActivity() {
         val selected = Prefs.selectedRooms(this)
         b.roomsContainer.removeAllViews()
         val q = query.trim()
-        val filtered = allRooms.filter { room ->
+
+        val duplicateTitles = allRooms
+            .groupingBy { it.title.removePrefix("#").lowercase(Locale.FRENCH) }
+            .eachCount()
+
+        val matching = allRooms.filter { room ->
             if (q.isBlank()) true
             else listOf(
                 room.title,
@@ -161,39 +170,62 @@ class MainActivity : AppCompatActivity() {
                 room.messagePreview,
                 shortRoomId(room.roomId)
             ).any { it.contains(q, true) }
-        }.take(250)
+        }
 
-        val duplicateTitles = allRooms
-            .groupingBy { it.title.removePrefix("#").lowercase(Locale.FRENCH) }
-            .eachCount()
+        val ordered = if (q.isBlank()) {
+            matching.sortedWith(
+                compareByDescending<BeeperRoom> { selected.contains(it.roomId) }
+                    .thenByDescending { it.timestamp }
+            )
+        } else matching
+
+        val displayLimit = if (q.isBlank()) 80 else 250
+        val filtered = ordered.take(displayLimit)
 
         filtered.forEach { room ->
             val server = roomServerLabel(room)
             val channel = room.title.removePrefix("#")
             val isDuplicate = (duplicateTitles[channel.lowercase(Locale.FRENCH)] ?: 0) > 1
-            val serverLine = if (server.isNotBlank()) {
-                "Serveur : $server"
-            } else {
-                "Serveur : non renseigné — appui long pour l’ajouter"
-            }
-            val preview = room.messagePreview.replace(Regex("\\s+"), " ").trim()
-                .takeIf { it.isNotBlank() }
-                ?.let { if (it.length <= 100) it else it.take(99) + "…" }
 
-            val meta = buildList {
+            val primary = if (server.isNotBlank()) {
+                "$server  ›  #$channel"
+            } else {
+                "#$channel"
+            }
+
+            val preview = room.messagePreview
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .takeIf { it.isNotBlank() }
+                ?.let { if (it.length <= 70) it else it.take(69) + "…" }
+
+            val secondary = buildList {
                 if (room.unreadCount > 0) add("${room.unreadCount} non lu(s)")
-                if (Prefs.roomUrl(this@MainActivity, room.roomId).isNotBlank()) add("🔗 Discord")
-                if (isDuplicate && server.isBlank()) add("⚠ nom de salon dupliqué")
-                add("ID ${shortRoomId(room.roomId)}")
+                if (isDuplicate && server.isBlank()) add("⚠ serveur à préciser")
+                if (Prefs.roomUrl(this@MainActivity, room.roomId).isNotBlank()) add("🔗")
+                preview?.let { add(it) }
+                if (isDuplicate && server.isBlank()) add("ID ${shortRoomId(room.roomId)}")
             }.joinToString("  •  ")
 
-            val cb = CheckBox(this).apply {
-                text = buildString {
-                    append("#$channel")
-                    append("\n$serverLine")
-                    if (preview != null) append("\nDernier message : $preview")
-                    append("\n$meta")
+            val styled = SpannableStringBuilder().apply {
+                val start = length
+                append(primary)
+                setSpan(
+                    StyleSpan(Typeface.BOLD),
+                    start,
+                    length,
+                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+                if (secondary.isNotBlank()) {
+                    append("\n")
+                    append(secondary)
                 }
+            }
+
+            val cb = CheckBox(this).apply {
+                text = styled
+                maxLines = 3
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 tag = room.roomId
                 isChecked = selected.contains(room.roomId)
                 setOnCheckedChangeListener { _, _ -> saveRoomSelection() }
@@ -204,9 +236,24 @@ class MainActivity : AppCompatActivity() {
             }
             b.roomsContainer.addView(cb)
         }
+
         if (filtered.isEmpty() && allRooms.isNotEmpty()) {
-            val cb = CheckBox(this).apply { text = "Aucun salon ne correspond à « $query »"; isEnabled = false }
+            val cb = CheckBox(this).apply {
+                text = "Aucun salon ne correspond à « $query »"
+                isEnabled = false
+            }
             b.roomsContainer.addView(cb)
+        } else if (ordered.size > filtered.size) {
+            val info = android.widget.TextView(this).apply {
+                val hidden = ordered.size - filtered.size
+                text = if (q.isBlank()) {
+                    "Affichage de ${filtered.size} salons sur ${ordered.size}. Utilise la recherche pour retrouver les ${hidden} autres."
+                } else {
+                    "${hidden} autre(s) résultat(s) non affiché(s). Affine la recherche."
+                }
+                setPadding(12, 12, 12, 18)
+            }
+            b.roomsContainer.addView(info)
         }
     }
 
