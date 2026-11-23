@@ -3,7 +3,9 @@ package fr.dreadaxe.beeperveille
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
@@ -25,6 +27,7 @@ class WatchWorker(appContext: Context, params: WorkerParameters) : CoroutineWork
         var total = 0
         var hits = 0
         val now = System.currentTimeMillis()
+        var notificationSince = Long.MAX_VALUE
 
         return try {
             rooms.forEach { roomId ->
@@ -36,7 +39,10 @@ class WatchWorker(appContext: Context, params: WorkerParameters) : CoroutineWork
                         .takeIf { it > 0 } ?: (now - intervalHours * 3600_000L)
                 }
 
-                val ms = repo.messagesSince(roomId, last + 1, now)
+                val since = last + 1
+                notificationSince = minOf(notificationSince, since)
+
+                val ms = repo.messagesSince(roomId, since, now)
                 total += ms.size
                 if (words.isNotEmpty()) {
                     hits += ms.count { m -> words.any { m.text.contains(it, true) } }
@@ -47,7 +53,17 @@ class WatchWorker(appContext: Context, params: WorkerParameters) : CoroutineWork
             }
 
             if (total > 0 && (words.isEmpty() || hits > 0)) {
-                notify(saved?.name ?: "Beeper Veille", total, hits, words, saved?.id)
+                val since = notificationSince.takeIf { it != Long.MAX_VALUE }
+                    ?: (now - intervalHours * 3600_000L)
+                notify(
+                    title = saved?.name ?: "Beeper Veille",
+                    total = total,
+                    hits = hits,
+                    words = words,
+                    watchId = saved?.id,
+                    since = since,
+                    until = now
+                )
             }
             Result.success()
         } catch (_: SecurityException) {
@@ -57,7 +73,15 @@ class WatchWorker(appContext: Context, params: WorkerParameters) : CoroutineWork
         }
     }
 
-    private fun notify(title: String, total: Int, hits: Int, words: List<String>, watchId: String?) {
+    private fun notify(
+        title: String,
+        total: Int,
+        hits: Int,
+        words: List<String>,
+        watchId: String?,
+        since: Long,
+        until: Long
+    ) {
         val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL, "Veilles Discord", NotificationManager.IMPORTANCE_DEFAULT)
@@ -69,11 +93,41 @@ class WatchWorker(appContext: Context, params: WorkerParameters) : CoroutineWork
             "$hits occurrence(s) de mots-clés dans $total nouveau(x) message(s) — « $title »."
         }
 
+        val openIntent = Intent(applicationContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(MainActivity.EXTRA_WATCH_ID, watchId)
+            putExtra(MainActivity.EXTRA_NOTIFICATION_SINCE, since)
+            putExtra(MainActivity.EXTRA_NOTIFICATION_UNTIL, until)
+            putExtra(MainActivity.EXTRA_AUTO_CHATGPT, false)
+        }
+        val openPending = PendingIntent.getActivity(
+            applicationContext,
+            (watchId ?: "default").hashCode(),
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val summarizeIntent = Intent(applicationContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(MainActivity.EXTRA_WATCH_ID, watchId)
+            putExtra(MainActivity.EXTRA_NOTIFICATION_SINCE, since)
+            putExtra(MainActivity.EXTRA_NOTIFICATION_UNTIL, until)
+            putExtra(MainActivity.EXTRA_AUTO_CHATGPT, true)
+        }
+        val summarizePending = PendingIntent.getActivity(
+            applicationContext,
+            ((watchId ?: "default") + "_chatgpt").hashCode(),
+            summarizeIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val n = NotificationCompat.Builder(applicationContext, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
+            .setContentTitle("Veille Discord — $title")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(openPending)
+            .addAction(android.R.drawable.ic_menu_send, "Résumer dans ChatGPT", summarizePending)
             .setAutoCancel(true)
             .build()
 
