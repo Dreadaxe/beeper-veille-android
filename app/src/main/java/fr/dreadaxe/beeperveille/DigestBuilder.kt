@@ -99,10 +99,15 @@ object DigestBuilder {
         rooms: Map<String, BeeperRoom>,
         messages: List<BeeperMessage>,
         words: List<String>,
-        links: Map<String, String> = emptyMap()
+        links: Map<String, String> = emptyMap(),
+        chatTitle: String = "VEILLE DISCORD"
     ): String {
         val raw = rawTxt(rooms, messages, words, links)
         val header = """
+            $chatTitle
+
+            Cette veille s'intitule « $chatTitle ». Garde ce libellé visible au début de ton résumé afin que cette discussion reste facilement identifiable dans l'historique ChatGPT.
+
             Je veux une veille concise de ces discussions Discord récupérées via Beeper.
             Fais un condensé JOUR PAR JOUR et SALON PAR SALON.
             Pour chaque bloc, distingue :
