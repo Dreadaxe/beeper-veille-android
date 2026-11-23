@@ -52,6 +52,10 @@ class MainActivity : AppCompatActivity() {
     private var loadedWords: List<String> = emptyList()
     private var pendingExport = ""
     private var activeWatchId: String? = null
+    private var pendingNotificationWatchId: String? = null
+    private var pendingNotificationSince: Long? = null
+    private var pendingNotificationUntil: Long? = null
+    private var pendingAutoChatGpt: Boolean = false
 
     private val beeperPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) loadRooms() else b.statusText.text = "Autorisation Beeper refusée."
@@ -66,6 +70,7 @@ class MainActivity : AppCompatActivity() {
         b = ActivityMainBinding.inflate(layoutInflater)
         setContentView(b.root)
         repo = BeeperRepository(contentResolver)
+        captureNotificationIntent(intent)
 
         b.periodSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
             listOf("Depuis le dernier passage", "Aujourd'hui", "Hier", "7 derniers jours", "30 derniers jours", "Tout l'historique Beeper"))
@@ -92,6 +97,37 @@ class MainActivity : AppCompatActivity() {
         b.watchIntervalSpinner.setOnItemSelectedListener(SimpleItemSelectedListener { })
 
         requestBeeperAccess()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        captureNotificationIntent(intent)
+        if (allRooms.isNotEmpty()) handlePendingNotificationLaunch()
+        else requestBeeperAccess()
+    }
+
+    private fun captureNotificationIntent(intent: Intent?) {
+        if (intent == null || !intent.hasExtra(EXTRA_NOTIFICATION_SINCE)) return
+        pendingNotificationWatchId = intent.getStringExtra(EXTRA_WATCH_ID)
+        pendingNotificationSince = intent.getLongExtra(EXTRA_NOTIFICATION_SINCE, 0L).takeIf { it > 0 }
+        pendingNotificationUntil = intent.getLongExtra(EXTRA_NOTIFICATION_UNTIL, 0L).takeIf { it > 0 }
+        pendingAutoChatGpt = intent.getBooleanExtra(EXTRA_AUTO_CHATGPT, false)
+    }
+
+    private fun handlePendingNotificationLaunch() {
+        val since = pendingNotificationSince ?: return
+        val until = pendingNotificationUntil ?: System.currentTimeMillis()
+        val watchId = pendingNotificationWatchId
+        val autoChat = pendingAutoChatGpt
+
+        pendingNotificationWatchId = null
+        pendingNotificationSince = null
+        pendingNotificationUntil = null
+        pendingAutoChatGpt = false
+
+        watchId?.let { Prefs.getWatch(this, it) }?.let { applyWatchConfig(it) }
+        loadWatch(watchId, since, until, autoChat)
     }
 
     private fun requestBeeperAccess() {
@@ -146,6 +182,7 @@ class MainActivity : AppCompatActivity() {
                     val protocols = repo.lastProtocols.sorted().joinToString(", ").ifBlank { "aucun protocole visible" }
                     "0 salon Discord. Beeper a renvoyé ${repo.lastRawChatCount} conversation(s). Protocoles vus : $protocols\n$diagnostic"
                 }
+                handlePendingNotificationLaunch()
             } catch (e: Throwable) {
                 b.statusText.text = "Impossible de lire Beeper : ${e.message ?: e.javaClass.simpleName}"
             }
@@ -330,7 +367,12 @@ class MainActivity : AppCompatActivity() {
         Prefs.setSelectedRooms(this, keptHidden + visible)
     }
 
-    private fun loadWatch(watchId: String? = null) {
+    private fun loadWatch(
+        watchId: String? = null,
+        overrideSince: Long? = null,
+        overrideUntil: Long? = null,
+        autoShareToChatGpt: Boolean = false
+    ) {
         saveRoomSelection()
         val selected = Prefs.selectedRooms(this)
         if (selected.isEmpty()) { toast("Choisis au moins un salon."); return }
@@ -342,19 +384,26 @@ class MainActivity : AppCompatActivity() {
             try {
                 val now = System.currentTimeMillis()
                 val all = mutableListOf<BeeperMessage>()
-                val fullHistory = b.periodSpinner.selectedItemPosition == 5
+                val notificationWindow = overrideSince != null
+                val fullHistory = !notificationWindow && b.periodSpinner.selectedItemPosition == 5
 
                 selected.forEach { roomId ->
                     val roomName = effectiveRoomMap()[roomId]?.title ?: roomMap[roomId]?.title ?: roomId
-                    val msgs = if (fullHistory) {
-                        repo.allMessages(roomId) { fetched, total ->
+                    val msgs = when {
+                        notificationWindow -> repo.messagesSince(
+                            roomId,
+                            overrideSince ?: 0L,
+                            overrideUntil ?: now
+                        )
+                        fullHistory -> repo.allMessages(roomId) { fetched, total ->
                             runOnUiThread {
                                 b.statusText.text = "Historique complet — $roomName : $fetched / $total message(s)…"
                             }
                         }
-                    } else {
-                        val (since, until) = periodBounds(roomId, now, watchId)
-                        repo.messagesSince(roomId, since, until)
+                        else -> {
+                            val (since, until) = periodBounds(roomId, now, watchId)
+                            repo.messagesSince(roomId, since, until)
+                        }
                     }
 
                     val filtered = if (loadedWords.isNotEmpty()) {
@@ -380,6 +429,7 @@ class MainActivity : AppCompatActivity() {
                     append("${loadedMessages.size} message(s) retenu(s).")
                     if (oldestText != null) append(" Plus ancien : $oldestText.")
                     if (fullHistory) append(" Historique Beeper parcouru jusqu'au bout.")
+                    if (notificationWindow) append(" Résultat de la notification.")
                 }
 
                 val hasMessages = loadedMessages.isNotEmpty()
@@ -387,6 +437,14 @@ class MainActivity : AppCompatActivity() {
                 b.shareButton.isEnabled = hasMessages
                 b.exportButton.isEnabled = hasMessages
                 b.shareChatgptButton.isEnabled = hasMessages
+
+                if (hasMessages && autoShareToChatGpt) {
+                    shareToChatGpt()
+                } else if (hasMessages && notificationWindow) {
+                    b.root.post {
+                        b.root.smoothScrollTo(0, (b.shareChatgptButton.top - 120).coerceAtLeast(0))
+                    }
+                }
             } catch (e: Throwable) {
                 b.statusText.text = "Erreur : ${e.message ?: e.javaClass.simpleName}"
             } finally {
@@ -462,17 +520,41 @@ class MainActivity : AppCompatActivity() {
         createTxt.launch("Beeper_Veille_$date.txt")
     }
 
+    private fun currentWatchLabel(): String {
+        activeWatchId?.let { id ->
+            Prefs.getWatch(this, id)?.name?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        b.watchNameInput.text?.toString()?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+        if (loadedWords.isNotEmpty()) return loadedWords.take(3).joinToString(" + ")
+        val roomNames = loadedMessages.mapNotNull { effectiveRoomMap()[it.roomId]?.title }.distinct()
+        if (roomNames.size == 1) return roomNames.first()
+        return "Veille Discord"
+    }
+
+    private fun currentChatTitle(): String {
+        val date = SimpleDateFormat("dd/MM/yyyy", Locale.FRENCH).format(Date())
+        return "VEILLE DISCORD — ${currentWatchLabel()} — $date"
+    }
+
     private fun shareToChatGpt() {
-        var text = DigestBuilder.chatGptPrompt(effectiveRoomMap(), loadedMessages, loadedWords, messageLinks())
+        val chatTitle = currentChatTitle()
+        var text = DigestBuilder.chatGptPrompt(
+            effectiveRoomMap(),
+            loadedMessages,
+            loadedWords,
+            messageLinks(),
+            chatTitle
+        )
         if (text.length > 180_000) text = text.take(180_000) + "\n\n[Export tronqué par l'application : réduire la période ou les salons pour tout transmettre.]"
         val direct = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, chatTitle)
             putExtra(Intent.EXTRA_TEXT, text)
             setPackage("com.openai.chatgpt")
         }
         try { startActivity(direct) } catch (_: ActivityNotFoundException) {
             direct.setPackage(null)
-            startActivity(Intent.createChooser(direct, "Partager pour faire le condensé"))
+            startActivity(Intent.createChooser(direct, "Partager — $chatTitle"))
         }
     }
 
@@ -619,5 +701,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
 
-    companion object { const val WORK_NAME = "beeper_discord_watch" }
+    companion object {
+        const val WORK_NAME = "beeper_discord_watch"
+        const val EXTRA_WATCH_ID = "watch_id"
+        const val EXTRA_NOTIFICATION_SINCE = "notification_since"
+        const val EXTRA_NOTIFICATION_UNTIL = "notification_until"
+        const val EXTRA_AUTO_CHATGPT = "auto_chatgpt"
+    }
 }
