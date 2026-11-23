@@ -72,8 +72,11 @@ class MainActivity : AppCompatActivity() {
         repo = BeeperRepository(contentResolver)
         captureNotificationIntent(intent)
 
-        b.periodSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
-            listOf("Depuis le dernier passage", "Aujourd'hui", "Hier", "7 derniers jours", "30 derniers jours", "Tout l'historique Beeper"))
+        b.periodSpinner.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            PERIOD_LABELS
+        )
         b.watchIntervalSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
             listOf("Toutes les heures", "Toutes les 6 h", "Toutes les 12 h", "Toutes les 24 h"))
         val savedHours = Prefs.intervalHours(this)
@@ -385,7 +388,7 @@ class MainActivity : AppCompatActivity() {
                 val now = System.currentTimeMillis()
                 val all = mutableListOf<BeeperMessage>()
                 val notificationWindow = overrideSince != null
-                val fullHistory = !notificationWindow && b.periodSpinner.selectedItemPosition == 5
+                val fullHistory = !notificationWindow && currentPeriodCode() == PERIOD_ALL
 
                 selected.forEach { roomId ->
                     val roomName = effectiveRoomMap()[roomId]?.title ?: roomMap[roomId]?.title ?: roomId
@@ -457,14 +460,20 @@ class MainActivity : AppCompatActivity() {
         val zone = ZoneId.systemDefault()
         fun start(day: LocalDate) = day.atStartOfDay(zone).toInstant().toEpochMilli()
         val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
-        return when (b.periodSpinner.selectedItemPosition) {
-            0 -> ((watchId?.let { Prefs.lastWatchRun(this, it, roomId) } ?: Prefs.lastManual(this, roomId)).takeIf { it > 0 } ?: start(today)) to now
-            1 -> start(today) to now
-            2 -> start(today.minusDays(1)) to (start(today) - 1)
-            3 -> start(today.minusDays(6)) to now
-            else -> start(today.minusDays(29)) to now
+        return when (currentPeriodCode()) {
+            PERIOD_SINCE_LAST -> ((watchId?.let { Prefs.lastWatchRun(this, it, roomId) } ?: Prefs.lastManual(this, roomId)).takeIf { it > 0 } ?: start(today)) to now
+            PERIOD_TODAY -> start(today) to now
+            PERIOD_YESTERDAY -> start(today.minusDays(1)) to (start(today) - 1)
+            PERIOD_2_DAYS -> start(today.minusDays(1)) to now
+            PERIOD_3_DAYS -> start(today.minusDays(2)) to now
+            PERIOD_7_DAYS -> start(today.minusDays(6)) to now
+            PERIOD_30_DAYS -> start(today.minusDays(29)) to now
+            else -> start(today) to now
         }
     }
+
+    private fun currentPeriodCode(): Int =
+        PERIOD_CODES.getOrElse(b.periodSpinner.selectedItemPosition) { PERIOD_SINCE_LAST }
 
     private fun messageLinks(): Map<String, String> {
         val out = mutableMapOf<String, String>()
@@ -630,7 +639,7 @@ class MainActivity : AppCompatActivity() {
             name = name,
             roomIds = rooms,
             keywords = b.keywordsInput.text?.toString().orEmpty(),
-            periodIndex = b.periodSpinner.selectedItemPosition,
+            periodIndex = currentPeriodCode(),
             includeContext = b.contextCheck.isChecked,
             autoEnabled = b.watchSwitch.isChecked,
             intervalHours = hours
@@ -647,7 +656,7 @@ class MainActivity : AppCompatActivity() {
         b.watchNameInput.setText(watch.name)
         Prefs.setSelectedRooms(this, watch.roomIds)
         b.keywordsInput.setText(watch.keywords)
-        b.periodSpinner.setSelection(watch.periodIndex.coerceIn(0, 5))
+        b.periodSpinner.setSelection(PERIOD_CODES.indexOf(watch.periodIndex).takeIf { it >= 0 } ?: 0)
         b.contextCheck.isChecked = watch.includeContext
         b.watchSwitch.isChecked = watch.autoEnabled
         b.watchIntervalSpinner.setSelection(listOf(1L, 6L, 12L, 24L).indexOf(watch.intervalHours).coerceAtLeast(0))
@@ -707,5 +716,36 @@ class MainActivity : AppCompatActivity() {
         const val EXTRA_NOTIFICATION_SINCE = "notification_since"
         const val EXTRA_NOTIFICATION_UNTIL = "notification_until"
         const val EXTRA_AUTO_CHATGPT = "auto_chatgpt"
+
+        private const val PERIOD_SINCE_LAST = 0
+        private const val PERIOD_TODAY = 1
+        private const val PERIOD_YESTERDAY = 2
+        private const val PERIOD_7_DAYS = 3
+        private const val PERIOD_30_DAYS = 4
+        private const val PERIOD_ALL = 5
+        private const val PERIOD_2_DAYS = 6
+        private const val PERIOD_3_DAYS = 7
+
+        private val PERIOD_CODES = listOf(
+            PERIOD_SINCE_LAST,
+            PERIOD_TODAY,
+            PERIOD_YESTERDAY,
+            PERIOD_2_DAYS,
+            PERIOD_3_DAYS,
+            PERIOD_7_DAYS,
+            PERIOD_30_DAYS,
+            PERIOD_ALL
+        )
+
+        private val PERIOD_LABELS = listOf(
+            "Depuis la dernière vérification",
+            "Aujourd'hui",
+            "Hier",
+            "2 derniers jours",
+            "3 derniers jours",
+            "7 derniers jours",
+            "30 derniers jours",
+            "Tout l'historique Beeper"
+        )
     }
 }
